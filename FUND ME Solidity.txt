@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.24;
+
+interface AggregatorV3Interface {
+    function version() external view returns (uint256);
+    function latestRoundData()
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 answer,
+            uint256, /* startedAt */
+            uint256, /* updatedAt */
+            uint80  /* answeredInRound */
+        );
+}
+
+library PriceConverter {
+    function getPrice(
+        AggregatorV3Interface priceFeed
+    ) internal view returns (uint256) {
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+        require(price > 0, "Invalid feed price");
+        return uint256(price) * 1e10;
+    }
+
+    function getConversionRate(
+        uint256 ethAmount,
+        AggregatorV3Interface priceFeed
+    ) internal view returns (uint256) {
+        uint256 ethPrice = getPrice(priceFeed);
+        return (ethPrice * ethAmount) / 1e18;
+    }
+}
+
+error NotOwner();
+
+contract FundMe {
+    using PriceConverter for uint256;
+    uint256 public constant minimumUsd = 50 * 1e18; // 1 * 10 ** 18
+    mapping(address => uint256) public addressToAmountFunded;
+    address[] public funders;
+
+    address public immutable i_owner;
+    uint256 public constant MINIMUM_USD = 5e18;
+
+    AggregatorV3Interface private immutable priceFeed;
+
+    constructor(address _priceFeedAddress) {
+        i_owner = msg.sender;
+        priceFeed = AggregatorV3Interface(_priceFeedAddress);
+    }
+
+    function fund() public payable {
+        require(
+            msg.value.getConversionRate(priceFeed) >= MINIMUM_USD,
+            "Need >= $5 ETH"
+        );
+        addressToAmountFunded[msg.sender] += msg.value;
+        funders.push(msg.sender);
+    }
+
+    function withdraw() public onlyOwner {
+        for (uint256 i = 0; i < funders.length; i++) {
+            addressToAmountFunded[funders[i]] = 0;
+        }
+        funders = new address[](0);
+        (bool success, ) = payable(i_owner).call{value: address(this).balance}("");
+        require(success, "Withdrawal failed");
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != i_owner) revert NotOwner();
+        _;
+    }
+
+    function getVersion() public view returns (uint256) {
+        AggregatorV3Interface localPriceFeed = AggregatorV3Interface(0x600E54Fc4cF6148Cd6696A3D37F5f672829BF7C2);
+        return localPriceFeed.version();
+    }
+
+    receive() external payable {
+        fund();
+    }
+
+    fallback() external payable {
+        fund();
+    }
+}
